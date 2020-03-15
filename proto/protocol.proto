@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+option go_package = "wboxproto";
+
+message IPv6 {
+    fixed64 high = 1;
+    fixed64 low = 2;
+}
+
+message Net4 {
+    fixed32 addr = 1;
+    int32 prefix_len = 2;
+}
+
+message Net6 {
+    IPv6 addr = 1;
+    int32 prefix_len = 2;
+}
+
+message Route4 {
+    Net4 dest = 1;
+    fixed32 src = 2;
+    fixed32 gateway = 3;
+}
+
+message Route6 {
+    Net6 dest = 1;
+    IPv6 src = 2;
+    IPv6 gateway = 3;
+}
+
+// Message type byte: 1
+message CfgSolict {
+    // ed25519 public key of the client. MUST be 32 bytes.
+    bytes peer_pubkey = 1;
+}
+
+// Message type byte: 2
+message Cfg {
+    // The UNIX timestamp the configuration is valid until.
+    uint64 valid_until = 2;
+
+    // IPv6 network configuration.
+    repeated Net6 net6 = 3;
+    repeated Route6 routes6 = 4;
+
+    // IPv4 network configuration.
+    repeated Net4 net4 = 16;
+    repeated Route4 routes4 = 17;
+
+    // The WireGuard tunnel endpoint client should switch to.
+    // Can be empty if the client should reuse the configuration tunnel.
+    // tun6_endpoint - Publicly routable IPv6 address of server.
+    // tun_endpoint  - Publicly routable IPv4 address of server.
+    // (at least one should be non-empty)
+    //
+    // tun_port      - UDP port to use.
+    IPv6 tun6_endpoint = 5;
+    fixed32 tun4_endpoint = 18;
+    uint32 tun_port = 6;
+}
+
+// Message type byte: 3
+message Nack {
+    // Human-readable error description.
+    bytes description = 1;
+}

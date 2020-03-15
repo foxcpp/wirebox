@@ -1,0 +1,16 @@
+# Interface name to use for tunnel.
+if = "wbox0"
+
+# base64-encoded private key goes here, generate it using 'wg genkey'
+private-key = "ffffffffffffffffffffffffffffffffffffffffffff"
+
+# Server public key.
+server-key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+# IP address and UDP port to use for tunnel connection initially.
+# Received configuration might override that.
+config-endpoint = "127.0.0.1:12000"
+
+# Time out for configuration request. Requests are repeated if the reply if not
+# arriving in that time.
+config-timeout = "5s"

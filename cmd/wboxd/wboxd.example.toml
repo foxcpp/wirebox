@@ -1,0 +1,71 @@
+# The server private key, generate using 'wg genkey'.
+private-key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+# Interface name to use for configuration tunnel.
+# In PtP mode (ptmp = false), per-client interfaces will get name thisname-cN,
+# where thisname is contents of this option and N is the numeric client ID (not
+# guaranteed to be stable).
+if = "wgdcp"
+
+# Enable PtMP (shared interface) mode. If enabled - all peers will use the
+# same interface on the server. This makes IP multicast problematic.
+# -- PtMP is not implemented yet and will cause failure on startup  ---
+ptmp = false
+
+# First port to use for tunnels. It is used for configuration tunnel.
+port-low = 12000
+
+# The last port to use for tunnels. Ports starting from port-low+1 and
+# port-high are used for per-client tunnels in PtP mode (ptmp = false).
+port-high = 13000
+
+# The file that contains each client public key on a separate line.
+# You can actually set it to /dev/null and list clients below using clients.AAA
+# blocks.
+authorized-keys = "./authorized_keys"
+
+# The server IPv4 and IPv6 addresses that will be assigned to created tunnels.
+# At least one of these options should be set.
+server4 = "192.0.2.1"
+server6 = "fda6:f4f4:f5f4::1"
+
+# Configuration for clients without a static IP assigned.
+#
+# pool4 and pool6 define the subnet dynamic IPs will be drawn from.
+#
+# -offset options are meant to reserve first N addresses in a subnet while
+# advertising the original prefix to clients. You want to make sure it is at
+# least 1 if server4 and server6 use the first address in the pool.
+#
+# In the current implementation, server will always assign the same address to
+# each client if its configuration is not changed in *any* way. Otherwise, no
+# guarantees are made.
+pool4 = "192.0.2.0/24"
+pool4-offset = 1
+pool6 = "fda6:f4f4:f5f4::/60"
+pool6-offset = 1
+
+# Additional routes client should add to its interface.
+# Each block with [[client_routes]] header specifies a separate route object
+# Valid properties are: dest, src corresponding to the route object properties
+# in Linux.
+[[client_routes]]
+dest = "fd00::/8"
+
+# Override configuration specified above on per-client basis.
+# Header is ["clients.AAAAA"] where AAAA... is clients public key.
+["clients.cccccccccccccccccccccccccccccccccccccccccccc"]
+# IPv4 tunnel endpoint that should be used by the client. Overrides the value
+# supplied in the client configuration.
+tun_endpoint4 = "10.20.20.1"
+# IPv6 variant of tun_endpoint4, both are sent to the client and it may use
+# either.
+tun_endpoint6 = "20001::db8:1::1"
+# Tunnel port to be used by the client.
+tun_port = 22222
+# Static IPs to assign to the client, no dynamic IP assignment will happen if
+# any addresses are specified here.
+addrs = [ "fda6:2474:15a4:1::2/64", "10.72.69.5/24" ]
+# Client routes to be used by the client. Global client_routes are ignored if
+# any are specified here.
+client_routes = [ { dest = "fd00::/8" } ]
