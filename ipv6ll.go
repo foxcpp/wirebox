@@ -13,7 +13,7 @@ import (
 // coerces 256-bit key into 128-bit IPv6 address with two reserved bytes.
 //
 // Determistic assignment is needed for tunnel configuration at the server
-// side. WG's "Allowed IPs" cannot say "any IP" for mulitple peers on the same
+// side. WG's "Allowed IPs" cannot say "any IP" for multiple peers on the same
 // interface.
 func IPv6LLForClient(publicKey PeerKey) net.IP {
 	i := &big.Int{}

@@ -38,7 +38,7 @@ func configureTunnel(m linkmgr.Manager, cfg Config) error {
 		return fmt.Errorf("configure tun: %w", err)
 	}
 
-	if err := setTunnelCfg(m, cfg, tunLink, configIPv6, clCfg); err != nil {
+	if err := setTunnelCfg(m, cfg, configIPv6, clCfg); err != nil {
 		if created {
 			if err := m.DelLink(tunLink.Index()); err != nil {
 				log.Println("error: failed to delete link:", err)
@@ -49,7 +49,7 @@ func configureTunnel(m linkmgr.Manager, cfg Config) error {
 	return nil
 }
 
-func setTunnelCfg(m linkmgr.Manager, cfg Config, tunLink linkmgr.Link, configIPv6 net.IP, clCfg *wboxproto.Cfg) error {
+func setTunnelCfg(m linkmgr.Manager, cfg Config, configIPv6 net.IP, clCfg *wboxproto.Cfg) error {
 	wgCfg := wgtypes.Config{
 		PrivateKey: &cfg.PrivateKey.Bytes,
 		Peers: []wgtypes.PeerConfig{
@@ -83,7 +83,7 @@ func setTunnelCfg(m linkmgr.Manager, cfg Config, tunLink linkmgr.Link, configIPv
 	// TODO: Test IPv6 connectivity and do not attempt to use it?
 	log.Printf("tunnel via %v:%v", srvEndpoint.IP, srvEndpoint.Port)
 
-	var addrs []linkmgr.Address
+	addrs := make([]linkmgr.Address, 0, len(clCfg.Net6)+len(clCfg.Net4))
 	for _, net6 := range clCfg.Net6 {
 		wgCfg.Peers[0].AllowedIPs = append(wgCfg.Peers[0].AllowedIPs, net.IPNet{
 			IP:   net6.GetAddr().AsIP(),
@@ -107,8 +107,7 @@ func setTunnelCfg(m linkmgr.Manager, cfg Config, tunLink linkmgr.Link, configIPv
 			Mask: mask,
 		})
 
-		var brd net.IP
-		brd = make(net.IP, 4)
+		brd := make(net.IP, 4)
 		binary.BigEndian.PutUint32(brd, binary.BigEndian.Uint32(ip)|^binary.BigEndian.Uint32(net.IP(mask).To4()))
 
 		log.Printf("using addr %v/%v", wboxproto.IPv4(net4.Addr), net4.PrefixLen)
