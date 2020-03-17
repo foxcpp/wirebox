@@ -149,21 +149,33 @@ func configurePeerTuns(m linkmgr.Manager, cfg SrvConfig, clientKeys []wirebox.Pe
 			})
 			addrs = append(addrs, linkmgr.Address{
 				IPNet: net.IPNet{
-					IP:   addr.Addr,
-					Mask: addr.Net.Mask,
+					IP:   server,
+					Mask: net.CIDRMask(bits, bits),
 				},
 				Peer: &net.IPNet{
-					IP:   server,
-					Mask: addr.Net.Mask,
+					IP:   addr.Addr,
+					Mask: net.CIDRMask(bits, bits),
 				},
 				Scope: linkmgr.ScopeGlobal,
 			})
 		}
 
 		// Allow clients to renew configuration via configured tunnel.
+		clientIPv6ll := wirebox.IPv6LLForClient(pubKey)
 		allowedIPs = append(allowedIPs, net.IPNet{
-			IP:   wirebox.IPv6LLForClient(pubKey),
+			IP:   clientIPv6ll,
 			Mask: net.CIDRMask(128, 128),
+		})
+		addrs = append(addrs, linkmgr.Address{
+			IPNet: net.IPNet{
+				IP:   wirebox.SolictIPv6,
+				Mask: net.CIDRMask(128, 128),
+			},
+			Peer: &net.IPNet{
+				IP:   clientIPv6ll,
+				Mask: net.CIDRMask(128, 128),
+			},
+			Scope: linkmgr.ScopeLink,
 		})
 
 		iface, created, err := wirebox.CreateWG(m, clCfg.If, wgtypes.Config{
@@ -182,7 +194,7 @@ func configurePeerTuns(m linkmgr.Manager, cfg SrvConfig, clientKeys []wirebox.Pe
 				if err := m.DelLink(iface.Index()); err != nil {
 					logErr(err)
 				} else {
-					log.Println("deleted link", iface.Name)
+					log.Println("deleted link", iface.Name())
 				}
 			}
 

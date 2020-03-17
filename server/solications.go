@@ -45,7 +45,7 @@ func createConfLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebox.Peer
 	})
 }
 
-func serve(stop chan struct{}, c *net.UDPConn, clCfgs map[wgtypes.Key]ClientCfg) {
+func serve(stop <-chan struct{}, c *net.UDPConn, clCfgs map[wgtypes.Key]ClientCfg) {
 	const maxMsg = 1420
 	buffer := make([]byte, maxMsg)
 
@@ -54,7 +54,6 @@ func serve(stop chan struct{}, c *net.UDPConn, clCfgs map[wgtypes.Key]ClientCfg)
 		if err != nil {
 			select {
 			case <-stop:
-				stop <- struct{}{}
 				return
 			default:
 			}

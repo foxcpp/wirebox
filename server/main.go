@@ -3,6 +3,7 @@ package wboxserver
 import (
 	"bufio"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -10,11 +11,13 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 	"github.com/foxcpp/wirebox"
 	"github.com/foxcpp/wirebox/linkmgr"
 	"golang.org/x/sys/unix"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 var (
@@ -57,6 +60,183 @@ func readKeyList(path string) ([]wirebox.PeerKey, error) {
 	return res, nil
 }
 
+func loadConfig(path string) (SrvConfig, error) {
+	cfgF, err := os.Open(path)
+	if err != nil {
+		return SrvConfig{}, fmt.Errorf("config load: %w", err)
+	}
+	var cfg SrvConfig
+	if _, err := toml.DecodeReader(cfgF, &cfg); err != nil {
+		return SrvConfig{}, fmt.Errorf("config load: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return SrvConfig{}, fmt.Errorf("config load: %w", err)
+	}
+	log.Println("server public key:", cfg.PrivateKey.PublicFromPrivate())
+	return cfg, nil
+}
+
+func clientKeys(cfg SrvConfig) ([]wirebox.PeerKey, error) {
+	var (
+		clientKeys []wirebox.PeerKey
+		err        error
+	)
+	if cfg.AuthFile != "" {
+		clientKeys, err = readKeyList(cfg.AuthFile)
+		if err != nil {
+			return nil, fmt.Errorf("client keys: %w", err)
+		}
+	} else {
+		for encoded := range cfg.Clients {
+			pubKey, err := wirebox.NewPeerKey(encoded)
+			if err != nil {
+				return nil, fmt.Errorf("client keys: %w", err)
+			}
+			clientKeys = append(clientKeys, pubKey)
+		}
+	}
+	if len(clientKeys) == 0 {
+		return nil, fmt.Errorf("client keys: no keys")
+	}
+	log.Println(len(clientKeys), "client keys")
+	return clientKeys, nil
+}
+
+type Server struct {
+	m linkmgr.Manager
+
+	ConfLink linkmgr.Link
+
+	// Whether the ConfLink was created on startup and hence should be removed
+	// afterwards.
+	DelConfTunnel bool
+
+	Cfg SrvConfig
+
+	// List of tunnel interfaces configured for clients.
+	Tunnels []linkmgr.Link
+
+	// List of newly created tunnel interface. These should be deleted on shutdown.
+	NewTunnels []linkmgr.Link
+
+	ClientCfgs  map[wgtypes.Key]ClientCfg
+	SolictConns []*net.UDPConn
+}
+
+func initialize(m linkmgr.Manager, cfgPath string) (*Server, error) {
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+
+	clientKeys, err := clientKeys(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	clientCfgs, err := buildClientConfigs(cfg, clientKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	confLink, created, err := createConfLink(m, cfg, clientKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	mainSolictConn, err := net.ListenUDP("udp6", &net.UDPAddr{
+		IP:   wirebox.SolictIPv6,
+		Port: wirebox.SolictPort,
+		Zone: strconv.Itoa(confLink.Index()),
+	})
+	if err != nil {
+		if err := m.DelLink(confLink.Index()); err != nil {
+			log.Println("failed to delete link:", err)
+		}
+		return nil, err
+	}
+
+	clientLinks, newLinks, err := configurePeerTuns(m, cfg, clientKeys, clientCfgs)
+	if err != nil {
+		if err := m.DelLink(confLink.Index()); err != nil {
+			log.Println("failed to delete link:", err)
+		}
+		return nil, err
+	}
+
+	solictConns := make([]*net.UDPConn, 0, len(clientLinks)+1)
+
+	for _, l := range clientLinks {
+		c, err := net.ListenUDP("udp6", &net.UDPAddr{
+			IP:   wirebox.SolictIPv6,
+			Port: wirebox.SolictPort,
+			Zone: strconv.Itoa(l.Index()),
+		})
+		if err != nil {
+			for _, sc := range solictConns {
+				sc.Close()
+			}
+			for _, l := range newLinks {
+				if err := m.DelLink(l.Index()); err != nil {
+					log.Println("failed to delete link:", err)
+				}
+			}
+			if err := m.DelLink(confLink.Index()); err != nil {
+				log.Println("failed to delete link:", err)
+			}
+			return nil, err
+		}
+		solictConns = append(solictConns, c)
+	}
+	solictConns = append(solictConns, mainSolictConn)
+
+	return &Server{
+		m:             m,
+		Cfg:           cfg,
+		ConfLink:      confLink,
+		DelConfTunnel: created,
+		Tunnels:       clientLinks,
+		NewTunnels:    newLinks,
+		ClientCfgs:    clientCfgs,
+		SolictConns:   solictConns,
+	}, nil
+}
+
+func (s *Server) GoServe() (stop func()) {
+	log.Println("serving configurations for", len(s.ClientCfgs), "clients")
+
+	wg := sync.WaitGroup{}
+	stopServe := make(chan struct{}, 1)
+
+	for _, sc := range s.SolictConns {
+		sc := sc
+
+		wg.Add(1)
+		go func() {
+			serve(stopServe, sc, s.ClientCfgs)
+			wg.Done()
+		}()
+	}
+
+	return func() {
+		close(stopServe)
+		for _, sc := range s.SolictConns {
+			sc.Close()
+		}
+		wg.Wait()
+	}
+}
+
+func (s *Server) Close() error {
+	for _, l := range s.NewTunnels {
+		s.m.DelLink(l.Index())
+	}
+	if s.DelConfTunnel {
+		s.m.DelLink(s.ConfLink.Index())
+	}
+	return nil
+}
+
 func Main() int {
 	// Read configuration and command line flags.
 	cfgPath := flag.String("config", "wboxd.toml", "path to configuration file")
@@ -66,109 +246,21 @@ func Main() int {
 		debugLog = log.New(ioutil.Discard, "", 0)
 	}
 
-	cfgF, err := os.Open(*cfgPath)
-	if err != nil {
-		logErr(err)
-		return 2
-	}
-	var cfg SrvConfig
-	if _, err := toml.DecodeReader(cfgF, &cfg); err != nil {
-		log.Println("error: config load:", err)
-		return 2
-	}
-	if err := cfg.Validate(); err != nil {
-		logErr(err)
-		return 2
-	}
-	log.Println("server public key:", cfg.PrivateKey.PublicFromPrivate())
-
-	var clientKeys []wirebox.PeerKey
-	if cfg.AuthFile != "" {
-		clientKeys, err = readKeyList(cfg.AuthFile)
-		if err != nil {
-			logErr(err)
-			return 2
-		}
-	} else {
-		for encoded := range cfg.Clients {
-			pubKey, err := wirebox.NewPeerKey(encoded)
-			if err != nil {
-				logErr(err)
-				return 2
-			}
-			clientKeys = append(clientKeys, pubKey)
-		}
-	}
-	if len(clientKeys) == 0 {
-		log.Println("error: no client keys configured")
-		return 2
-	}
-	log.Println(len(clientKeys), "client keys")
-
-	clientCfgs, err := buildClientConfigs(cfg, clientKeys)
-	if err != nil {
-		logErr(err)
-		return 1
-	}
-
 	m, err := linkmgr.NewManager()
 	if err != nil {
 		log.Println("error: link mngr init:", err)
 		return 1
 	}
 
-	_, newClientLinks, err := configurePeerTuns(m, cfg, clientKeys, clientCfgs)
+	srv, err := initialize(m, *cfgPath)
 	if err != nil {
-		logErr(err)
+		log.Println("error: initialization failed:", err)
 		return 1
 	}
-	defer func() {
-		for _, l := range newClientLinks {
-			if err := m.DelLink(l.Index()); err != nil {
-				logErr(err)
-			} else {
-				log.Println("deleted link", l.Name())
-			}
-		}
-	}()
+	defer srv.Close()
 
-	// Create configuration interface.
-	confLink, created, err := createConfLink(m, cfg, clientKeys)
-	if err != nil {
-		logErr(err)
-		return 1
-	}
-	if created {
-		log.Println("created configuration link", confLink.Name())
-		defer func() {
-			logErr(m.DelLink(confLink.Index()))
-			log.Println("deleted link", confLink.Name())
-		}()
-	} else {
-		log.Println("using existing link", confLink.Name(), "for configuration")
-	}
-
-	// Listen on SolictIPv6.
-	c, err := net.ListenUDP("udp6", &net.UDPAddr{
-		IP:   wirebox.SolictIPv6,
-		Port: wirebox.SolictPort,
-		Zone: strconv.Itoa(confLink.Index()),
-	})
-	if err != nil {
-		logErr(err)
-		return 1
-	}
-	log.Println("listening on", c.LocalAddr())
-
-	stopServe := make(chan struct{}, 1)
-	go serve(stopServe, c, clientCfgs)
-	defer func() {
-		<-stopServe
-	}()
-	defer c.Close()
-	defer func() {
-		stopServe <- struct{}{}
-	}()
+	stop := srv.GoServe()
+	defer stop()
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, unix.SIGINT, unix.SIGHUP, unix.SIGTERM)
