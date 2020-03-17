@@ -10,8 +10,7 @@ import (
 	"strconv"
 
 	"github.com/foxcpp/wirebox"
-	"github.com/jsimonetti/rtnetlink"
-	"golang.org/x/sys/unix"
+	"github.com/foxcpp/wirebox/linkmgr"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -120,13 +119,13 @@ func buildClientConfigs(cfg SrvConfig, clientKeys []wirebox.PeerKey) (map[wgtype
 	return res, nil
 }
 
-func configurePeerTuns(cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs map[wgtypes.Key]ClientCfg) (allIfs []*net.Interface, createdIfs []*net.Interface, err error) {
+func configurePeerTuns(m linkmgr.Manager, cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs map[wgtypes.Key]ClientCfg) (allIfs, links []linkmgr.Link, err error) {
 	if cfg.PtMP {
 		return nil, nil, errors.New("PtMP mode is not implemented yet")
 	}
 
-	allIfs = make([]*net.Interface, 0, len(clientKeys))
-	createdIfs = make([]*net.Interface, 0, len(clientKeys))
+	allIfs = make([]linkmgr.Link, 0, len(clientKeys))
+	links = make([]linkmgr.Link, 0, len(clientKeys))
 
 	for _, pubKey := range clientKeys {
 		clCfg, ok := clientCfgs[pubKey.Bytes]
@@ -135,15 +134,10 @@ func configurePeerTuns(cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs m
 		}
 
 		allowedIPs := make([]net.IPNet, 0, len(clCfg.Addrs))
-		addrs := []rtnetlink.AddressMessage{}
+		addrs := []linkmgr.Address{}
 		for _, addr := range clCfg.Addrs {
-			family := unix.AF_INET6
-			var broadcast net.IP
 			server := cfg.Server6.Addr
 			if to4 := addr.Addr.To4(); to4 != nil {
-				family = unix.AF_INET
-				broadcast = make(net.IP, 4)
-				binary.BigEndian.PutUint32(broadcast, binary.BigEndian.Uint32(to4)|^binary.BigEndian.Uint32(net.IP(addr.Net.Mask).To4()))
 				addr.Addr = to4
 				server = cfg.Server4.Addr.To4()
 			}
@@ -153,15 +147,16 @@ func configurePeerTuns(cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs m
 				IP:   addr.Addr,
 				Mask: net.CIDRMask(bits, bits),
 			})
-			addrs = append(addrs, rtnetlink.AddressMessage{
-				Family:       uint8(family),
-				PrefixLength: uint8(bits),
-				Scope:        unix.RT_SCOPE_UNIVERSE,
-				Attributes: rtnetlink.AddressAttributes{
-					Address:   addr.Addr,
-					Local:     server,
-					Broadcast: broadcast,
+			addrs = append(addrs, linkmgr.Address{
+				IPNet: net.IPNet{
+					IP:   addr.Addr,
+					Mask: addr.Net.Mask,
 				},
+				Peer: &net.IPNet{
+					IP:   server,
+					Mask: addr.Net.Mask,
+				},
+				Scope: linkmgr.ScopeGlobal,
 			})
 		}
 
@@ -171,7 +166,7 @@ func configurePeerTuns(cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs m
 			Mask: net.CIDRMask(128, 128),
 		})
 
-		iface, created, err := wirebox.CreateWG(clCfg.If, wgtypes.Config{
+		iface, created, err := wirebox.CreateWG(m, clCfg.If, wgtypes.Config{
 			PrivateKey:   &pubKey.Bytes,
 			ReplacePeers: true,
 			ListenPort:   &clCfg.TunPort,
@@ -183,8 +178,8 @@ func configurePeerTuns(cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs m
 			},
 		}, addrs)
 		if err != nil {
-			for _, iface := range createdIfs {
-				if err := wirebox.Conn.Link.Delete(uint32(iface.Index)); err != nil {
+			for _, iface := range links {
+				if err := m.DelLink(iface.Index()); err != nil {
 					logErr(err)
 				} else {
 					log.Println("deleted link", iface.Name)
@@ -196,11 +191,11 @@ func configurePeerTuns(cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs m
 		allIfs = append(allIfs, iface)
 		if created {
 			log.Println("created link", clCfg.If, "for", pubKey)
-			createdIfs = append(createdIfs, iface)
+			links = append(links, iface)
 		} else {
 			log.Println("using existing link", clCfg.If, "for", pubKey)
 		}
 	}
 
-	return allIfs, createdIfs, nil
+	return allIfs, links, nil
 }

@@ -26,7 +26,6 @@ message Route4 {
 message Route6 {
     Net6 dest = 1;
     IPv6 src = 2;
-    IPv6 gateway = 3;
 }
 
 // Message type byte: 1

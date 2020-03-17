@@ -8,41 +8,39 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/foxcpp/wirebox"
+	"github.com/foxcpp/wirebox/linkmgr"
 	wboxproto "github.com/foxcpp/wirebox/proto"
-	"github.com/jsimonetti/rtnetlink"
-	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func configureTunnel(cfg Config) error {
+func configureTunnel(m linkmgr.Manager, cfg Config) error {
 	log.Println("configuring tunnel")
 	pubKey := cfg.PrivateKey.PublicFromPrivate()
 	configIPv6 := wirebox.IPv6LLForClient(pubKey)
 
-	tunIf, created, err := createConfigTun(cfg, configIPv6)
+	tunLink, created, err := createConfigTun(m, cfg, configIPv6)
 	if err != nil {
 		return fmt.Errorf("configure tun: %w", err)
 	}
 
-	clCfg, err := solictCfg(cfg, configIPv6, pubKey, tunIf)
+	clCfg, err := solictCfg(cfg, configIPv6, pubKey, tunLink)
 	if err != nil {
 		if created {
-			if err := wirebox.Conn.Link.Delete(uint32(tunIf.Index)); err != nil {
+			if err := m.DelLink(tunLink.Index()); err != nil {
 				log.Println("error: failed to delete link:", err)
 			}
 		}
 		return fmt.Errorf("configure tun: %w", err)
 	}
 
-	if err := setTunnelCfg(cfg, tunIf, configIPv6, clCfg); err != nil {
+	if err := setTunnelCfg(m, cfg, tunLink, configIPv6, clCfg); err != nil {
 		if created {
-			if err := wirebox.Conn.Link.Delete(uint32(tunIf.Index)); err != nil {
+			if err := m.DelLink(tunLink.Index()); err != nil {
 				log.Println("error: failed to delete link:", err)
 			}
 		}
@@ -51,7 +49,7 @@ func configureTunnel(cfg Config) error {
 	return nil
 }
 
-func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wboxproto.Cfg) error {
+func setTunnelCfg(m linkmgr.Manager, cfg Config, tunLink linkmgr.Link, configIPv6 net.IP, clCfg *wboxproto.Cfg) error {
 	wgCfg := wgtypes.Config{
 		PrivateKey: &cfg.PrivateKey.Bytes,
 		Peers: []wgtypes.PeerConfig{
@@ -85,7 +83,7 @@ func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wb
 	// TODO: Test IPv6 connectivity and do not attempt to use it?
 	log.Printf("tunnel via %v:%v", srvEndpoint.IP, srvEndpoint.Port)
 
-	var addrs []rtnetlink.AddressMessage
+	var addrs []linkmgr.Address
 	for _, net6 := range clCfg.Net6 {
 		wgCfg.Peers[0].AllowedIPs = append(wgCfg.Peers[0].AllowedIPs, net.IPNet{
 			IP:   net6.GetAddr().AsIP(),
@@ -93,15 +91,12 @@ func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wb
 		})
 
 		log.Printf("using addr %v/%v", net6.Addr.AsIP(), net6.PrefixLen)
-		addrs = append(addrs, rtnetlink.AddressMessage{
-			Family:       unix.AF_INET6,
-			PrefixLength: uint8(net6.GetPrefixLen()),
-			Flags:        unix.IFA_F_PERMANENT,
-			Scope:        unix.RT_SCOPE_UNIVERSE,
-			Attributes: rtnetlink.AddressAttributes{
-				Address: net6.Addr.AsIP(),
-				Local:   net6.Addr.AsIP(),
+		addrs = append(addrs, linkmgr.Address{
+			IPNet: net.IPNet{
+				IP:   net6.Addr.AsIP(),
+				Mask: net.CIDRMask(128, int(net6.GetPrefixLen())),
 			},
+			Scope: linkmgr.ScopeGlobal,
 		})
 	}
 	for _, net4 := range clCfg.Net4 {
@@ -117,22 +112,18 @@ func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wb
 		binary.BigEndian.PutUint32(brd, binary.BigEndian.Uint32(ip)|^binary.BigEndian.Uint32(net.IP(mask).To4()))
 
 		log.Printf("using addr %v/%v", wboxproto.IPv4(net4.Addr), net4.PrefixLen)
-		addrs = append(addrs, rtnetlink.AddressMessage{
-			Family:       unix.AF_INET,
-			PrefixLength: uint8(net4.GetPrefixLen()),
-			Scope:        unix.RT_SCOPE_UNIVERSE,
-			Attributes: rtnetlink.AddressAttributes{
-				Address:   ip,
-				Local:     ip,
-				Broadcast: brd,
+		addrs = append(addrs, linkmgr.Address{
+			IPNet: net.IPNet{
+				IP:   wboxproto.IPv4(net4.Addr),
+				Mask: net.CIDRMask(int(net4.GetPrefixLen()), 32),
 			},
+			Scope: linkmgr.ScopeGlobal,
 		})
 	}
 
 	for _, route4 := range clCfg.Routes4 {
-		log.Printf("using route %v/%v via %v src %v",
+		log.Printf("using route %v/%v src %v",
 			wboxproto.IPv4(route4.Dest.Addr), route4.Dest.PrefixLen,
-			wboxproto.IPv4(route4.Gateway),
 			wboxproto.IPv4(route4.Src))
 		wgCfg.Peers[0].AllowedIPs = append(wgCfg.Peers[0].AllowedIPs, net.IPNet{
 			IP:   wboxproto.IPv4(route4.GetDest().Addr),
@@ -140,9 +131,8 @@ func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wb
 		})
 	}
 	for _, route6 := range clCfg.Routes6 {
-		log.Printf("using route %v/%v via %v src %v",
+		log.Printf("using route %v/%v src %v",
 			route6.Dest.Addr.AsIP(), route6.Dest.PrefixLen,
-			route6.Gateway.AsIP(),
 			route6.Src.AsIP())
 		wgCfg.Peers[0].AllowedIPs = append(wgCfg.Peers[0].AllowedIPs, net.IPNet{
 			IP:   route6.GetDest().Addr.AsIP(),
@@ -150,30 +140,23 @@ func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wb
 		})
 	}
 
-	tunIf, _, err := wirebox.CreateWG(cfg.If, wgCfg, addrs)
+	tunLink, _, err := wirebox.CreateWG(m, cfg.If, wgCfg, addrs)
 	if err != nil {
 		return fmt.Errorf("set config: %w", err)
 	}
 	log.Println("tunnel reconfigured")
 
 	for i, route4 := range clCfg.Routes4 {
-		msg := &rtnetlink.RouteMessage{
-			Family:    unix.AF_INET,
-			DstLength: uint8(route4.GetDest().GetPrefixLen()),
-			SrcLength: 32,
-			Protocol:  wirebox.RouteProto,
-			Attributes: rtnetlink.RouteAttributes{
-				Dst:      wboxproto.IPv4(route4.GetDest().Addr),
-				OutIface: uint32(tunIf.Index),
+		route := linkmgr.Route{
+			Dest: net.IPNet{
+				IP:   wboxproto.IPv4(route4.GetDest().Addr),
+				Mask: net.CIDRMask(int(route4.GetDest().GetPrefixLen()), 32),
 			},
 		}
 		if route4.GetSrc() != 0 {
-			msg.Attributes.Src = wboxproto.IPv4(route4.GetSrc())
+			route.Src = wboxproto.IPv4(route4.GetSrc())
 		}
-		if route4.GetGateway() != 0 {
-			msg.Attributes.Gateway = wboxproto.IPv4(route4.GetGateway())
-		}
-		if err := wirebox.Conn.Route.Add(msg); err != nil {
+		if err := tunLink.AddRoute(route); err != nil {
 			if errors.Is(err, syscall.EEXIST) {
 				continue
 			}
@@ -183,23 +166,16 @@ func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wb
 	log.Println("installed IPv4 routes")
 
 	for i, route6 := range clCfg.Routes6 {
-		msg := &rtnetlink.RouteMessage{
-			Family:    unix.AF_INET6,
-			DstLength: uint8(route6.GetDest().GetPrefixLen()),
-			SrcLength: 128,
-			Protocol:  wirebox.RouteProto,
-			Attributes: rtnetlink.RouteAttributes{
-				Dst:      route6.GetDest().Addr.AsIP(),
-				OutIface: uint32(tunIf.Index),
+		route := linkmgr.Route{
+			Dest: net.IPNet{
+				IP:   route6.GetDest().Addr.AsIP(),
+				Mask: net.CIDRMask(int(route6.GetDest().GetPrefixLen()), 128),
 			},
 		}
 		if route6.GetSrc() != nil {
-			msg.Attributes.Src = route6.GetSrc().AsIP()
+			route.Src = route6.GetSrc().AsIP()
 		}
-		if route6.GetGateway() != nil {
-			msg.Attributes.Gateway = route6.GetGateway().AsIP()
-		}
-		if err := wirebox.Conn.Route.Add(msg); err != nil {
+		if err := tunLink.AddRoute(route); err != nil {
 			if errors.Is(err, syscall.EEXIST) {
 				continue
 			}
@@ -211,8 +187,8 @@ func setTunnelCfg(cfg Config, tunIf *net.Interface, configIPv6 net.IP, clCfg *wb
 	return nil
 }
 
-func createConfigTun(cfg Config, configIPv6 net.IP) (*net.Interface, bool, error) {
-	tunIf, created, err := wirebox.CreateWG(cfg.If, wgtypes.Config{
+func createConfigTun(m linkmgr.Manager, cfg Config, configIPv6 net.IP) (linkmgr.Link, bool, error) {
+	tunLink, created, err := wirebox.CreateWG(m, cfg.If, wgtypes.Config{
 		PrivateKey: &cfg.PrivateKey.Bytes,
 		Peers: []wgtypes.PeerConfig{
 			{
@@ -233,40 +209,36 @@ func createConfigTun(cfg Config, configIPv6 net.IP) (*net.Interface, bool, error
 				},
 			},
 		},
-	}, []rtnetlink.AddressMessage{
+	}, []linkmgr.Address{
 		{
-			Family:       unix.AF_INET6,
-			PrefixLength: 128,
-			Flags:        unix.IFA_F_PERMANENT,
-			Scope:        unix.RT_SCOPE_LINK,
-			Attributes: rtnetlink.AddressAttributes{
-				Address: wirebox.SolictIPv6,
-				Local:   configIPv6,
+			IPNet: net.IPNet{
+				IP:   configIPv6,
+				Mask: net.CIDRMask(128, 128),
 			},
+			Peer: &net.IPNet{
+				IP:   wirebox.SolictIPv6,
+				Mask: net.CIDRMask(128, 128),
+			},
+			Scope: linkmgr.ScopeLink,
 		},
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("create config tun: %w", err)
 	}
 	if created {
-		log.Println("created link", tunIf.Name)
+		log.Println("created link", tunLink.Name())
 	} else {
-		log.Println("using existing link", tunIf.Name)
+		log.Println("using existing link", tunLink.Name())
 	}
-	return tunIf, created, nil
+	return tunLink, created, nil
 }
 
-func solictCfg(cfg Config, configIPv6 net.IP, pubKey wirebox.PeerKey, tunIf *net.Interface) (*wboxproto.Cfg, error) {
-	c, err := net.DialUDP("udp6", &net.UDPAddr{
-		IP:   configIPv6,
-		Zone: strconv.Itoa(tunIf.Index),
-	}, &net.UDPAddr{
+func solictCfg(cfg Config, configIPv6 net.IP, pubKey wirebox.PeerKey, tunLink linkmgr.Link) (*wboxproto.Cfg, error) {
+	c, err := tunLink.DialUDP(net.UDPAddr{
+		IP: configIPv6,
+	}, net.UDPAddr{
 		IP:   wirebox.SolictIPv6,
 		Port: wirebox.SolictPort,
-		// Apparently, using interface index of name fixes the race (?) that
-		// makes interface unusable for the process just after its
-		// configuration.
-		Zone: strconv.Itoa(tunIf.Index),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("solict cfg: %w", err)
@@ -343,9 +315,15 @@ func Main() int {
 		cfg.ConfigTimeout.Duration = 5 * time.Second
 	}
 
+	m, err := linkmgr.NewManager()
+	if err != nil {
+		log.Println("error: link mngr init:", err)
+		return 1
+	}
+
 	log.Println("client public key:", cfg.PrivateKey.PublicFromPrivate())
 
-	if err := configureTunnel(cfg); err != nil {
+	if err := configureTunnel(m, cfg); err != nil {
 		log.Println("error:", err)
 		return 1
 	}

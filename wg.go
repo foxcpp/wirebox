@@ -6,70 +6,37 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
-	"os"
 	"syscall"
 
-	"github.com/jsimonetti/rtnetlink"
-	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/wgctrl"
+	"github.com/foxcpp/wirebox/linkmgr"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-var (
-	Cl   *wgctrl.Client
-	Conn *rtnetlink.Conn
-)
-
-func CreateWG(name string, cfg wgtypes.Config, addrs []rtnetlink.AddressMessage) (iface *net.Interface, created bool, err error) {
-	iface, err = net.InterfaceByName(name)
+func CreateWG(m linkmgr.Manager, name string, cfg wgtypes.Config, addrs []linkmgr.Address) (link linkmgr.Link, created bool, err error) {
+	link, err = m.GetLink(name)
 	if err != nil {
 		created = true
-		// Assuming we don't have the interface, create it.
-		err := Conn.Link.New(&rtnetlink.LinkMessage{
-			Type:  65534, // Seems to be set by 'ip link add'
-			Flags: unix.IFF_NOARP,
-			Attributes: &rtnetlink.LinkAttributes{
-				Name: name,
-				Info: &rtnetlink.LinkInfo{
-					Kind: "wireguard",
-				},
-			},
-		})
+		link, err = m.CreateLink(name)
 		if err != nil {
-			return nil, false, fmt.Errorf("wg create: new link: %w", err)
+			return nil, false, fmt.Errorf("wg create: %w", err)
 		}
 	}
 
-	if err := Cl.ConfigureDevice(name, cfg); err != nil {
+	if err := link.ConfigureWG(cfg); err != nil {
 		return nil, false, fmt.Errorf("wg create: configure: %w", err)
 	}
 
-	iface, err = net.InterfaceByName(name)
-	if err != nil {
-		return nil, false, fmt.Errorf("wg create: %w", err)
-	}
-
-	err = Conn.Link.Set(&rtnetlink.LinkMessage{
-		Family: 0,
-		Type:   0,
-		Index:  uint32(iface.Index),
-		Flags:  unix.IFF_UP,
-		Change: unix.IFF_UP,
-	})
-	if err != nil {
+	if err := link.SetUp(true); err != nil {
 		return nil, false, fmt.Errorf("wg create: set up: %w", err)
 	}
 
 	for i, addr := range addrs {
-		addr.Index = uint32(iface.Index)
-		err = Conn.Address.New(&addr)
-		if err != nil {
+		if err := link.AddAddr(addr); err != nil {
 			if errors.Is(err, syscall.EEXIST) {
 				continue
 			}
 			if created {
-				if delerr := Conn.Link.Delete(uint32(iface.Index)); delerr != nil {
+				if delerr := m.DelLink(link.Index()); delerr != nil {
 					log.Println("error:", delerr)
 				}
 			}
@@ -77,7 +44,7 @@ func CreateWG(name string, cfg wgtypes.Config, addrs []rtnetlink.AddressMessage)
 		}
 	}
 
-	return iface, created, nil
+	return link, created, nil
 }
 
 type PeerKey struct {
@@ -127,19 +94,4 @@ func (k *PeerKey) UnmarshalText(text []byte) error {
 	var err error
 	*k, err = NewPeerKey(k.Encoded)
 	return err
-}
-
-// Initialize global RTNETLINK connections.
-func init() {
-	var err error
-	Cl, err = wgctrl.New()
-	if err != nil {
-		log.Println("wgctrl new:", err)
-		os.Exit(1)
-	}
-	Conn, err = rtnetlink.Dial(nil)
-	if err != nil {
-		log.Println("rtnetlink new:", err)
-		os.Exit(1)
-	}
 }

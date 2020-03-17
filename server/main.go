@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/foxcpp/wirebox"
+	"github.com/foxcpp/wirebox/linkmgr"
 	"golang.org/x/sys/unix"
 )
 
@@ -110,42 +111,48 @@ func Main() int {
 		return 1
 	}
 
-	_, newClientIfs, err := configurePeerTuns(cfg, clientKeys, clientCfgs)
+	m, err := linkmgr.NewManager()
+	if err != nil {
+		log.Println("error: link mngr init:", err)
+		return 1
+	}
+
+	_, newClientLinks, err := configurePeerTuns(m, cfg, clientKeys, clientCfgs)
 	if err != nil {
 		logErr(err)
 		return 1
 	}
 	defer func() {
-		for _, iface := range newClientIfs {
-			if err := wirebox.Conn.Link.Delete(uint32(iface.Index)); err != nil {
+		for _, l := range newClientLinks {
+			if err := m.DelLink(l.Index()); err != nil {
 				logErr(err)
 			} else {
-				log.Println("deleted link", iface.Name)
+				log.Println("deleted link", l.Name())
 			}
 		}
 	}()
 
 	// Create configuration interface.
-	confIf, created, err := createConfIf(cfg, clientKeys)
+	confLink, created, err := createConfLink(m, cfg, clientKeys)
 	if err != nil {
 		logErr(err)
 		return 1
 	}
 	if created {
-		log.Println("created configuration link", confIf.Name)
+		log.Println("created configuration link", confLink.Name())
 		defer func() {
-			logErr(wirebox.Conn.Link.Delete(uint32(confIf.Index)))
-			log.Println("deleted link", confIf.Name)
+			logErr(m.DelLink(confLink.Index()))
+			log.Println("deleted link", confLink.Name())
 		}()
 	} else {
-		log.Println("using existing link", confIf.Name, "for configuration")
+		log.Println("using existing link", confLink.Name(), "for configuration")
 	}
 
 	// Listen on SolictIPv6.
 	c, err := net.ListenUDP("udp6", &net.UDPAddr{
 		IP:   wirebox.SolictIPv6,
 		Port: wirebox.SolictPort,
-		Zone: strconv.Itoa(confIf.Index),
+		Zone: strconv.Itoa(confLink.Index()),
 	})
 	if err != nil {
 		logErr(err)

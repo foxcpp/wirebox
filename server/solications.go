@@ -8,13 +8,12 @@ import (
 	"net"
 
 	"github.com/foxcpp/wirebox"
+	"github.com/foxcpp/wirebox/linkmgr"
 	wboxproto "github.com/foxcpp/wirebox/proto"
-	"github.com/jsimonetti/rtnetlink"
-	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func createConfIf(scfg SrvConfig, clientKeys []wirebox.PeerKey) (*net.Interface, bool, error) {
+func createConfLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebox.PeerKey) (linkmgr.Link, bool, error) {
 	cfg := wgtypes.Config{
 		PrivateKey:   &scfg.PrivateKey.Bytes,
 		ListenPort:   &scfg.PortLow,
@@ -36,14 +35,11 @@ func createConfIf(scfg SrvConfig, clientKeys []wirebox.PeerKey) (*net.Interface,
 		})
 	}
 
-	return wirebox.CreateWG(scfg.If, cfg, []rtnetlink.AddressMessage{
+	return wirebox.CreateWG(m, scfg.If, cfg, []linkmgr.Address{
 		{
-			Family:       unix.AF_INET6,
-			PrefixLength: 8,
-			Scope:        unix.RT_SCOPE_LINK,
-			Attributes: rtnetlink.AddressAttributes{
-				Address: wirebox.SolictIPv6,
-				Local:   wirebox.SolictIPv6,
+			IPNet: net.IPNet{
+				IP:   wirebox.SolictIPv6,
+				Mask: net.CIDRMask(8, 128),
 			},
 		},
 	})
