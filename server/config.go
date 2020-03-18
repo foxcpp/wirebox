@@ -28,13 +28,11 @@ type SrvConfig struct {
 	Pool6Offset  uint64  `toml:"pool6-offset"`
 	Pool4        IPAddr  `toml:"pool4"`
 	Pool4Offset  uint64  `toml:"pool4-offset"`
-	ClientRoutes []Route `toml:"client_routes"`
+	ClientRoutes []Route `toml:"client-routes"`
 
 	AuthFile string `toml:"authorized-keys"`
 
-	// Overrides for static configuration. buildPool fills this map with for
-	// dynamically configured clients. Keyed by base64-encoded client public
-	// key.
+	// Overrides for static configuration.
 	Clients map[string]ClientCfg `toml:"clients"`
 }
 
@@ -42,9 +40,13 @@ func (c SrvConfig) Validate() error {
 	if c.If == "" {
 		return errors.New("config: if is required")
 	}
-	if len(c.If) > 15 {
+	if c.PtMP && len(c.If) > 15 {
 		return errors.New("config: if is too long (can be 15 octets at most)")
 	}
+	if !c.PtMP && len(c.If) > 12 {
+		return errors.New("config: if is too long (can be 15 octets at most, including client sequence number)")
+	}
+
 	if c.PrivateKey.Encoded == "" {
 		return errors.New("config: private-key is required")
 	}
@@ -55,7 +57,7 @@ func (c SrvConfig) Validate() error {
 		return errors.New("config: both or none of port-low and port-high should be specified")
 	}
 	if c.PortLow != 0 && c.PortHigh != 0 {
-		if c.PortLow >= c.PortHigh {
+		if !c.PtMP && c.PortLow >= c.PortHigh {
 			return errors.New("config: port range should contain at least two ports")
 		}
 		if c.PortLow < 0 || c.PortLow > 65535 {
@@ -65,6 +67,9 @@ func (c SrvConfig) Validate() error {
 			return errors.New("config: invalid port-high")
 		}
 	}
+	if c.PtMP && c.PortHigh-c.PortLow != 0 {
+		return errors.New("config: ports other than port-low are not used in PtMP mode")
+	}
 
 	if c.Pool6.Addr != nil && c.Server6.Addr == nil {
 		return errors.New("config: server6 is required if pool6 is used")
@@ -72,6 +77,7 @@ func (c SrvConfig) Validate() error {
 	if c.Pool4.Addr != nil && c.Server4.Addr == nil {
 		return errors.New("config: server4 is required if pool4 is used")
 	}
+	// TODO: Verify that pool4/6 is a subnet of server4/6 in PtMP subnet mode.
 	if c.AuthFile == "" && len(c.Clients) == 0 {
 		return errors.New("config: at least one of authorized-keys, clients is required")
 	}
@@ -85,6 +91,27 @@ func (c SrvConfig) Validate() error {
 		}
 		if len(clCfg.If) > 15 {
 			return errors.New("config: too long interface name for " + pubKey)
+		}
+
+		for _, a := range clCfg.Addrs {
+			if a.PtP {
+				continue
+			}
+			if a.Addr.To4() != nil {
+				if !c.Server4.PtP {
+					return errors.New("config: per-client prefix lengths are not used in PtMP subnet mode")
+				}
+				if !c.Server4.Net.Contains(a.Addr) {
+					return fmt.Errorf("config: %v is not in %v network", a.Addr, c.Server4.Net)
+				}
+			} else {
+				if !c.Server6.PtP {
+					return errors.New("config: per-client prefix lengths are not used in PtMP subnet mode")
+				}
+				if !c.Server6.Net.Contains(a.Addr) {
+					return fmt.Errorf("config: %v is not in %v network", a.Addr, c.Server6.Net)
+				}
+			}
 		}
 	}
 
@@ -110,6 +137,7 @@ type Route struct {
 type IPAddr struct {
 	Addr net.IP
 	Net  *net.IPNet
+	PtP  bool
 }
 
 func (a *IPAddr) String() string {
@@ -128,6 +156,7 @@ func (a *IPAddr) UnmarshalText(text []byte) error {
 
 	// If no prefix length was specified - assume the peer-to-peer
 	// configuration is desired.
+	a.PtP = true
 	a.Addr = net.ParseIP(addr)
 	if a.Addr == nil {
 		return errors.New("malformed IP")

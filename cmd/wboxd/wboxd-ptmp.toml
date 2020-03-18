@@ -1,0 +1,19 @@
+private-key = "0O8vSLCoEdM/Srit1hwF4qNZFIWRkZZ645AbJ2AE6ko="
+
+if = "wgdcp"
+ptmp = true
+port-low = 12000
+port-high = 12000
+
+authorized-keys = "./authorized_keys"
+
+server4 = "10.72.69.32/28"
+server6 = "fda6:2474:15a4:1000::1/64"
+
+pool4 = "10.72.69.32/28"
+pool4-offset = 1
+pool6 = "fda6:2474:15a4:1000::/60"
+pool6-offset = 4096
+
+[[client_routes]]
+dest = "fd00::/8"

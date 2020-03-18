@@ -105,11 +105,11 @@ func clientKeys(cfg SrvConfig) ([]wirebox.PeerKey, error) {
 type Server struct {
 	m linkmgr.Manager
 
-	ConfLink linkmgr.Link
+	MasterLink linkmgr.Link
 
 	// Whether the ConfLink was created on startup and hence should be removed
 	// afterwards.
-	DelConfTunnel bool
+	DelMasterLink bool
 
 	Cfg SrvConfig
 
@@ -139,7 +139,16 @@ func initialize(m linkmgr.Manager, cfgPath string) (*Server, error) {
 		return nil, err
 	}
 
-	confLink, created, err := createConfLink(m, cfg, clientKeys)
+	var (
+		created    bool
+		masterLink linkmgr.Link
+	)
+
+	if cfg.PtMP {
+		masterLink, created, err = createMultipointLink(m, cfg, clientKeys, clientCfgs)
+	} else {
+		masterLink, created, err = createConfLink(m, cfg, clientKeys)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -147,21 +156,28 @@ func initialize(m linkmgr.Manager, cfgPath string) (*Server, error) {
 	mainSolictConn, err := net.ListenUDP("udp6", &net.UDPAddr{
 		IP:   wirebox.SolictIPv6,
 		Port: wirebox.SolictPort,
-		Zone: strconv.Itoa(confLink.Index()),
+		Zone: strconv.Itoa(masterLink.Index()),
 	})
 	if err != nil {
-		if err := m.DelLink(confLink.Index()); err != nil {
+		if err := m.DelLink(masterLink.Index()); err != nil {
 			log.Println("failed to delete link:", err)
 		}
 		return nil, err
 	}
 
-	clientLinks, newLinks, err := configurePeerTuns(m, cfg, clientKeys, clientCfgs)
-	if err != nil {
-		if err := m.DelLink(confLink.Index()); err != nil {
-			log.Println("failed to delete link:", err)
+	var (
+		clientLinks []linkmgr.Link
+		newLinks    []linkmgr.Link
+	)
+
+	if !cfg.PtMP {
+		clientLinks, newLinks, err = configurePeerTuns(m, cfg, clientKeys, clientCfgs)
+		if err != nil {
+			if err := m.DelLink(masterLink.Index()); err != nil {
+				log.Println("failed to delete link:", err)
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 
 	solictConns := make([]*net.UDPConn, 0, len(clientLinks)+1)
@@ -181,7 +197,7 @@ func initialize(m linkmgr.Manager, cfgPath string) (*Server, error) {
 					log.Println("failed to delete link:", err)
 				}
 			}
-			if err := m.DelLink(confLink.Index()); err != nil {
+			if err := m.DelLink(masterLink.Index()); err != nil {
 				log.Println("failed to delete link:", err)
 			}
 			return nil, err
@@ -193,8 +209,8 @@ func initialize(m linkmgr.Manager, cfgPath string) (*Server, error) {
 	return &Server{
 		m:             m,
 		Cfg:           cfg,
-		ConfLink:      confLink,
-		DelConfTunnel: created,
+		MasterLink:    masterLink,
+		DelMasterLink: created,
 		Tunnels:       clientLinks,
 		NewTunnels:    newLinks,
 		ClientCfgs:    clientCfgs,
@@ -229,10 +245,14 @@ func (s *Server) GoServe() (stop func()) {
 
 func (s *Server) Close() error {
 	for _, l := range s.NewTunnels {
-		s.m.DelLink(l.Index())
+		if err := s.m.DelLink(l.Index()); err != nil {
+			log.Println("error: failed to delete link:", err)
+		}
 	}
-	if s.DelConfTunnel {
-		s.m.DelLink(s.ConfLink.Index())
+	if s.DelMasterLink {
+		if err := s.m.DelLink(s.MasterLink.Index()); err != nil {
+			log.Println("error: failed to delete link:", err)
+		}
 	}
 	return nil
 }

@@ -9,7 +9,10 @@ if = "wgdcp"
 
 # Enable PtMP (shared interface) mode. If enabled - all peers will use the
 # same interface on the server. This makes IP multicast problematic.
-# -- PtMP is not implemented yet and will cause failure on startup  ---
+#
+# Enabling PtMP mode and specifying prefix length in server4/server6 below
+# will configure a single address on the interface instead of per-client
+# local-peer pairs.
 ptmp = false
 
 # First port to use for tunnels. It is used for configuration tunnel.
@@ -65,7 +68,7 @@ tun_endpoint6 = "20001::db8:1::1"
 tun_port = 22222
 # Static IPs to assign to the client, no dynamic IP assignment will happen if
 # any addresses are specified here.
-addrs = [ "fda6:2474:15a4:1::2/64", "10.72.69.5/24" ]
+addrs = [ "fda6:2474:15a4:1::2", "10.72.69.5" ]
 # Client routes to be used by the client. Global client_routes are ignored if
 # any are specified here.
 client_routes = [ { dest = "fd00::/8" } ]

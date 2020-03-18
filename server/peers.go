@@ -64,7 +64,9 @@ func buildClientConfigs(cfg SrvConfig, clientKeys []wirebox.PeerKey) (map[wgtype
 	for i, pubKey := range clientKeys {
 		clCfg := cfg.Clients[pubKey.Encoded]
 
-		if clCfg.If == "" {
+		if cfg.PtMP {
+			clCfg.If = cfg.If
+		} else if clCfg.If == "" {
 			// We shift index by one make interface numbering consistent with
 			// port numbers used (PortLow is used for configuration tunnel,
 			// PortLow+1 for first client, etc).
@@ -75,7 +77,9 @@ func buildClientConfigs(cfg SrvConfig, clientKeys []wirebox.PeerKey) (map[wgtype
 			clCfg.TunEndpoint4 = cfg.TunEndpoint4
 			clCfg.TunEndpoint6 = cfg.TunEndpoint6
 		}
-		if clCfg.TunPort == 0 {
+		if cfg.PtMP {
+			clCfg.TunPort = cfg.PortLow
+		} else if clCfg.TunPort == 0 {
 			clCfg.TunPort = cfg.PortLow + i + 1
 			if clCfg.TunPort > cfg.PortHigh {
 				log.Printf("ran out of UDP ports for tunnels! cannot allocate one for %v", pubKey)
@@ -112,6 +116,14 @@ func buildClientConfigs(cfg SrvConfig, clientKeys []wirebox.PeerKey) (map[wgtype
 			clCfg.Routes = cfg.ClientRoutes
 		}
 
+		for _, a := range clCfg.Addrs {
+			if a.Addr.To4() != nil && !cfg.Server4.PtP {
+				a.Net = cfg.Server4.Net
+			} else if !cfg.Server6.PtP {
+				a.Net = cfg.Server6.Net
+			}
+		}
+
 		res[pubKey.Bytes] = clCfg
 	}
 
@@ -120,10 +132,6 @@ func buildClientConfigs(cfg SrvConfig, clientKeys []wirebox.PeerKey) (map[wgtype
 }
 
 func configurePeerTuns(m linkmgr.Manager, cfg SrvConfig, clientKeys []wirebox.PeerKey, clientCfgs map[wgtypes.Key]ClientCfg) (allIfs, links []linkmgr.Link, err error) {
-	if cfg.PtMP {
-		return nil, nil, errors.New("PtMP mode is not implemented yet")
-	}
-
 	allIfs = make([]linkmgr.Link, 0, len(clientKeys))
 	links = make([]linkmgr.Link, 0, len(clientKeys))
 

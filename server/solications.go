@@ -8,42 +8,9 @@ import (
 	"net"
 
 	"github.com/foxcpp/wirebox"
-	"github.com/foxcpp/wirebox/linkmgr"
 	wboxproto "github.com/foxcpp/wirebox/proto"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-func createConfLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebox.PeerKey) (linkmgr.Link, bool, error) {
-	cfg := wgtypes.Config{
-		PrivateKey:   &scfg.PrivateKey.Bytes,
-		ListenPort:   &scfg.PortLow,
-		ReplacePeers: true,
-	}
-
-	for _, pubKey := range clientKeys {
-		clientLL := wirebox.IPv6LLForClient(pubKey)
-		debugLog.Printf("IPv6LL for %v: %v", pubKey, clientLL)
-
-		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
-			PublicKey: pubKey.Bytes,
-			AllowedIPs: []net.IPNet{
-				{ // Permit link-local communication over configuration interface.
-					IP:   clientLL,
-					Mask: net.CIDRMask(128, 128),
-				},
-			},
-		})
-	}
-
-	return wirebox.CreateWG(m, scfg.If, cfg, []linkmgr.Address{
-		{
-			IPNet: net.IPNet{
-				IP:   wirebox.SolictIPv6,
-				Mask: net.CIDRMask(8, 128),
-			},
-		},
-	})
-}
 
 func serve(stop <-chan struct{}, c *net.UDPConn, clCfgs map[wgtypes.Key]ClientCfg) {
 	const maxMsg = 1420
