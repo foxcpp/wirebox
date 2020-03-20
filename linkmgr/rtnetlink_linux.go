@@ -102,6 +102,9 @@ func asAddrMsg(ifaceIndx int, a Address) *rtnetlink.AddressMessage {
 	if v4 := a.IP.To4(); v4 != nil {
 		family = unix.AF_INET
 		a.IP = v4
+		if a.Peer != nil {
+			a.Peer.IP = a.Peer.IP.To4()
+		}
 
 		brd = make(net.IP, 4)
 		binary.BigEndian.PutUint32(brd, binary.BigEndian.Uint32(a.IP)|^binary.BigEndian.Uint32(net.IP(a.Mask).To4()))

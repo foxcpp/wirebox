@@ -229,7 +229,7 @@ func (s *Server) GoServe() (stop func()) {
 
 		wg.Add(1)
 		go func() {
-			serve(stopServe, sc, s.ClientCfgs)
+			serve(stopServe, sc, s.Cfg, s.ClientCfgs)
 			wg.Done()
 		}()
 	}

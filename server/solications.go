@@ -12,7 +12,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func serve(stop <-chan struct{}, c *net.UDPConn, clCfgs map[wgtypes.Key]ClientCfg) {
+func serve(stop <-chan struct{}, c *net.UDPConn, scfg SrvConfig, clCfgs map[wgtypes.Key]ClientCfg) {
 	const maxMsg = 1420
 	buffer := make([]byte, maxMsg)
 
@@ -37,7 +37,7 @@ func serve(stop <-chan struct{}, c *net.UDPConn, clCfgs map[wgtypes.Key]ClientCf
 		var reply wboxproto.Message
 		switch msg := msg.(type) {
 		case *wboxproto.CfgSolict:
-			reply, err = sendConfig(msg, sender, clCfgs)
+			reply, err = sendConfig(msg, sender, scfg, clCfgs)
 		default:
 			debugLog.Printf("unexpected message type %T from %v", msg, sender)
 			continue
@@ -62,7 +62,7 @@ func serve(stop <-chan struct{}, c *net.UDPConn, clCfgs map[wgtypes.Key]ClientCf
 	}
 }
 
-func sendConfig(msg *wboxproto.CfgSolict, sender *net.UDPAddr, clCfgs map[wgtypes.Key]ClientCfg) (wboxproto.Message, error) {
+func sendConfig(msg *wboxproto.CfgSolict, sender *net.UDPAddr, scfg SrvConfig, clCfgs map[wgtypes.Key]ClientCfg) (wboxproto.Message, error) {
 	clKey := wirebox.PeerKey{
 		Encoded: base64.StdEncoding.EncodeToString(msg.GetPeerPubkey()),
 	}
@@ -90,50 +90,56 @@ func sendConfig(msg *wboxproto.CfgSolict, sender *net.UDPAddr, clCfgs map[wgtype
 	protoCfg := &wboxproto.Cfg{
 		TunPort: uint32(cfg.TunPort),
 	}
-	if cfg.TunEndpoint4.Net != nil {
-		protoCfg.Tun4Endpoint = binary.BigEndian.Uint32(cfg.TunEndpoint4.Addr)
+	if scfg.Server4.IP != nil {
+		protoCfg.Server4 = binary.BigEndian.Uint32(scfg.Server4.IP.To4())
 	}
-	if cfg.TunEndpoint6.Net != nil {
-		protoCfg.Tun6Endpoint = wboxproto.NewIPv6(cfg.TunEndpoint6.Addr)
+	if scfg.Server6.IP != nil {
+		protoCfg.Server6 = wboxproto.NewIPv6(scfg.Server6.IP)
+	}
+	if cfg.TunEndpoint4 != nil {
+		protoCfg.Tun4Endpoint = binary.BigEndian.Uint32(cfg.TunEndpoint4)
+	}
+	if cfg.TunEndpoint6 != nil {
+		protoCfg.Tun6Endpoint = wboxproto.NewIPv6(cfg.TunEndpoint6)
 	}
 	for _, addr := range cfg.Addrs {
-		prefixLen, ipLen := addr.Net.Mask.Size()
+		prefixLen, ipLen := addr.Mask.Size()
 		if ipLen == 32 /* IPv4 */ {
 			protoCfg.Net4 = append(protoCfg.Net4, &wboxproto.Net4{
-				Addr:      binary.BigEndian.Uint32(addr.Addr.To4()),
+				Addr:      binary.BigEndian.Uint32(addr.IP.To4()),
 				PrefixLen: int32(prefixLen),
 			})
 		} else {
 			protoCfg.Net6 = append(protoCfg.Net6, &wboxproto.Net6{
-				Addr:      wboxproto.NewIPv6(addr.Addr),
+				Addr:      wboxproto.NewIPv6(addr.IP),
 				PrefixLen: int32(prefixLen),
 			})
 		}
 	}
 	for _, route := range cfg.Routes {
-		prefixLen, ipLen := route.Dest.Net.Mask.Size()
+		prefixLen, ipLen := route.Dest.Mask.Size()
 		// Use IP from Net object as it is "normalized", all bits
 		// not in prefix are set to 0.
 		if ipLen == 32 /* IPv4 */ {
 			protoRoute := &wboxproto.Route4{
 				Dest: &wboxproto.Net4{
-					Addr:      binary.BigEndian.Uint32(route.Dest.Net.IP.To4()),
+					Addr:      binary.BigEndian.Uint32(route.Dest.IP.To4()),
 					PrefixLen: int32(prefixLen),
 				},
 			}
 			if route.Src != nil {
-				protoRoute.Src = binary.BigEndian.Uint32(route.Src.Addr.To4())
+				protoRoute.Src = binary.BigEndian.Uint32(route.Src.IP.To4())
 			}
 			protoCfg.Routes4 = append(protoCfg.Routes4, protoRoute)
 		} else {
 			protoRoute := &wboxproto.Route6{
 				Dest: &wboxproto.Net6{
-					Addr:      wboxproto.NewIPv6(route.Dest.Net.IP),
+					Addr:      wboxproto.NewIPv6(route.Dest.IP),
 					PrefixLen: int32(prefixLen),
 				},
 			}
 			if route.Src != nil {
-				protoRoute.Src = wboxproto.NewIPv6(route.Src.Addr)
+				protoRoute.Src = wboxproto.NewIPv6(route.Src.IP)
 			}
 			protoCfg.Routes6 = append(protoCfg.Routes6, protoRoute)
 		}

@@ -8,23 +8,25 @@ private-key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 if = "wgdcp"
 
 # Enable PtMP (shared interface) mode. If enabled - all peers will use the
-# same interface on the server. This makes IP multicast problematic.
-#
-# Enabling PtMP mode and specifying prefix length in server4/server6 below
-# will configure a single address on the interface instead of per-client
-# local-peer pairs.
+# same interface on the server. This makes IP multicast impossible as it is not
+# supported by Wireguard cryptokey router.
 ptmp = false
+
+# Network that is managed by wboxd. If it is specified - all other addresses
+# in this configuration must belong to this network. If it is not specified -
+# point-to-point topology is assumed, allowing unrestricted IP
+# assignments for advanced configurations.
+subnet4 = "192.0.2.0/24"
+subnet6 = "fda6:f4f4:f5f4::/48"
 
 # First port to use for tunnels. It is used for configuration tunnel.
 port-low = 12000
-
 # The last port to use for tunnels. Ports starting from port-low+1 and
 # port-high are used for per-client tunnels in PtP mode (ptmp = false).
 port-high = 13000
 
-# The file that contains each client public key on a separate line.
-# You can actually set it to /dev/null and list clients below using clients.AAA
-# blocks.
+# The file that contains each client public key on a separate line.  You can
+# actually set it to /dev/null and list clients below using clients.AAA blocks.
 authorized-keys = "./authorized_keys"
 
 # The server IPv4 and IPv6 addresses that will be assigned to created tunnels.
@@ -34,18 +36,18 @@ server6 = "fda6:f4f4:f5f4::1"
 
 # Configuration for clients without a static IP assigned.
 #
-# pool4 and pool6 define the subnet dynamic IPs will be drawn from.
+# pool4 and pool6 define the network dynamic IPs will be drawn from.
+# It must be the subnet of subnet4/6.
 #
 # -offset options are meant to reserve first N addresses in a subnet while
 # advertising the original prefix to clients. You want to make sure it is at
 # least 1 if server4 and server6 use the first address in the pool.
 #
 # In the current implementation, server will always assign the same address to
-# each client if its configuration is not changed in *any* way. Otherwise, no
-# guarantees are made.
+# each client depending on the authorized-keys order.
 pool4 = "192.0.2.0/24"
 pool4-offset = 1
-pool6 = "fda6:f4f4:f5f4::/60"
+pool6 = "fda6:f4f4:f5f4::/64"
 pool6-offset = 1
 
 # Additional routes client should add to its interface.
@@ -63,7 +65,7 @@ dest = "fd00::/8"
 tun_endpoint4 = "10.20.20.1"
 # IPv6 variant of tun_endpoint4, both are sent to the client and it may use
 # either.
-tun_endpoint6 = "20001::db8:1::1"
+tun_endpoint6 = "2001::db8:1::1"
 # Tunnel port to be used by the client.
 tun_port = 22222
 # Static IPs to assign to the client, no dynamic IP assignment will happen if

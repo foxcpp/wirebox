@@ -4,7 +4,7 @@ option go_package = "wboxproto";
 
 message IPv6 {
     fixed64 high = 1;
-    fixed64 low = 2;
+    uint64 low = 2;
 }
 
 message Net4 {
@@ -40,10 +40,12 @@ message Cfg {
     uint64 valid_until = 2;
 
     // IPv6 network configuration.
+    IPv6 server6 = 7;
     repeated Net6 net6 = 3;
     repeated Route6 routes6 = 4;
 
     // IPv4 network configuration.
+    fixed32 server4 = 8;
     repeated Net4 net4 = 16;
     repeated Route4 routes4 = 17;
 

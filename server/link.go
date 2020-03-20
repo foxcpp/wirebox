@@ -21,6 +21,7 @@ func createMultipointLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebo
 	//
 	// IP multicast will *not* work at all in this configuration.
 
+	// Add link-local address for configuration renewal.
 	linkAddrs := []linkmgr.Address{
 		{
 			IPNet: net.IPNet{
@@ -30,20 +31,23 @@ func createMultipointLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebo
 			Scope: linkmgr.ScopeLink,
 		},
 	}
-	if !scfg.Server4.PtP {
+
+	// If we have subnet specified - we can just assign it to the interface at
+	// the server and be done with it.
+	if scfg.Subnet4.IP != nil {
 		linkAddrs = append(linkAddrs, linkmgr.Address{
 			IPNet: net.IPNet{
-				IP:   scfg.Server4.Addr,
-				Mask: scfg.Server4.Net.Mask,
+				IP:   scfg.Server4.IP,
+				Mask: scfg.Subnet4.Mask,
 			},
 			Scope: linkmgr.ScopeGlobal,
 		})
 	}
-	if !scfg.Server6.PtP {
+	if scfg.Subnet6.IP != nil {
 		linkAddrs = append(linkAddrs, linkmgr.Address{
 			IPNet: net.IPNet{
-				IP:   scfg.Server6.Addr,
-				Mask: scfg.Server6.Net.Mask,
+				IP:   scfg.Server6.IP,
+				Mask: scfg.Subnet6.Mask,
 			},
 			Scope: linkmgr.ScopeGlobal,
 		})
@@ -53,7 +57,7 @@ func createMultipointLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebo
 		clCfg := clientCfgs[pubKey.Bytes]
 
 		clientLL := wirebox.IPv6LLForClient(pubKey)
-		addrs := []net.IPNet{
+		allowedIPs := []net.IPNet{
 			{ // Permit link-local communication over configuration interface.
 				IP:   clientLL,
 				Mask: net.CIDRMask(128, 128),
@@ -61,38 +65,39 @@ func createMultipointLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebo
 		}
 
 		for _, clAddr := range clCfg.Addrs {
-			if clAddr.Addr.To4() != nil && scfg.Server4.PtP {
+			if v4 := clAddr.IP.To4(); v4 != nil {
 				linkAddrs = append(linkAddrs, linkmgr.Address{
 					IPNet: net.IPNet{
-						IP:   scfg.Server4.Addr,
+						IP:   scfg.Server4.IP,
 						Mask: net.CIDRMask(32, 32),
 					},
 					Peer: &net.IPNet{
-						IP:   clAddr.Addr,
+						IP:   v4,
 						Mask: net.CIDRMask(32, 32),
 					},
 					Scope: linkmgr.ScopeGlobal,
 				})
-			} else if scfg.Server6.PtP {
+			} else {
 				linkAddrs = append(linkAddrs, linkmgr.Address{
 					IPNet: net.IPNet{
-						IP:   scfg.Server6.Addr,
+						IP:   scfg.Server6.IP,
 						Mask: net.CIDRMask(128, 128),
 					},
 					Peer: &net.IPNet{
-						IP:   clAddr.Addr,
+						IP:   clAddr.IP,
 						Mask: net.CIDRMask(128, 128),
 					},
 					Scope: linkmgr.ScopeGlobal,
 				})
 			}
 
+			// Allow the client to use the IP address.
 			mask := net.CIDRMask(128, 128)
-			if clAddr.Addr.To4() != nil {
+			if clAddr.IP.To4() != nil {
 				mask = net.CIDRMask(32, 32)
 			}
-			addrs = append(addrs, net.IPNet{
-				IP:   clAddr.Addr,
+			allowedIPs = append(allowedIPs, net.IPNet{
+				IP:   clAddr.IP,
 				Mask: mask,
 			})
 		}
@@ -100,7 +105,7 @@ func createMultipointLink(m linkmgr.Manager, scfg SrvConfig, clientKeys []wirebo
 		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
 			PublicKey:         pubKey.Bytes,
 			ReplaceAllowedIPs: true,
-			AllowedIPs:        addrs,
+			AllowedIPs:        allowedIPs,
 		})
 	}
 

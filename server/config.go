@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
 
 	"github.com/foxcpp/wirebox"
 )
@@ -12,6 +11,9 @@ import (
 type SrvConfig struct {
 	If   string `toml:"if"`
 	PtMP bool   `toml:"ptmp"`
+
+	Subnet4 IPNet `toml:"subnet4"`
+	Subnet6 IPNet `toml:"subnet6"`
 
 	PrivateKey wirebox.PeerKey `toml:"private-key"`
 	Server4    IPAddr          `toml:"server4"`
@@ -24,16 +26,16 @@ type SrvConfig struct {
 	PortHigh int `toml:"port-high"`
 
 	// Network configuration for dynamically configured clients.
-	Pool6        IPAddr  `toml:"pool6"`
+	Pool6        IPNet   `toml:"pool6"`
 	Pool6Offset  uint64  `toml:"pool6-offset"`
-	Pool4        IPAddr  `toml:"pool4"`
+	Pool4        IPNet   `toml:"pool4"`
 	Pool4Offset  uint64  `toml:"pool4-offset"`
 	ClientRoutes []Route `toml:"client-routes"`
 
 	AuthFile string `toml:"authorized-keys"`
 
 	// Overrides for static configuration.
-	Clients map[string]ClientCfg `toml:"clients"`
+	Clients map[string]ClientOverrides `toml:"clients"`
 }
 
 func (c SrvConfig) Validate() error {
@@ -50,7 +52,7 @@ func (c SrvConfig) Validate() error {
 	if c.PrivateKey.Encoded == "" {
 		return errors.New("config: private-key is required")
 	}
-	if c.Server4.Addr == nil && c.Server6.Addr == nil {
+	if c.Server4.IP == nil && c.Server6.IP == nil {
 		return errors.New("config: at least one of server4, server6 is required")
 	}
 	if (c.PortLow == 0 && c.PortHigh != 0) || (c.PortHigh != 0 && c.PortLow == 0) {
@@ -71,19 +73,18 @@ func (c SrvConfig) Validate() error {
 		return errors.New("config: ports other than port-low are not used in PtMP mode")
 	}
 
-	if c.Pool6.Addr != nil && c.Server6.Addr == nil {
-		return errors.New("config: server6 is required if pool6 is used")
+	if (c.Pool6.IP != nil || c.Subnet6.IP == nil) && c.Server6.IP == nil {
+		return errors.New("config: server6 is required if pool6 or subnet6 is used")
 	}
-	if c.Pool4.Addr != nil && c.Server4.Addr == nil {
-		return errors.New("config: server4 is required if pool4 is used")
+	if (c.Pool4.IP != nil || c.Subnet4.IP == nil) && c.Server4.IP == nil {
+		return errors.New("config: server4 is required if pool4 or subnet4 is used")
 	}
-	// TODO: Verify that pool4/6 is a subnet of server4/6 in PtMP subnet mode.
 	if c.AuthFile == "" && len(c.Clients) == 0 {
 		return errors.New("config: at least one of authorized-keys, clients is required")
 	}
 
 	for pubKey, clCfg := range c.Clients {
-		if len(clCfg.Addrs) == 0 && (c.Pool6.Addr == nil && c.Pool4.Addr == nil) {
+		if len(clCfg.Addrs) == 0 && (c.Pool6.IP == nil && c.Pool4.IP == nil) {
 			return errors.New("config: missing addresses for " + pubKey)
 		}
 		if clCfg.TunPort == 0 && c.PortLow == 0 {
@@ -92,33 +93,12 @@ func (c SrvConfig) Validate() error {
 		if len(clCfg.If) > 15 {
 			return errors.New("config: too long interface name for " + pubKey)
 		}
-
-		for _, a := range clCfg.Addrs {
-			if a.PtP {
-				continue
-			}
-			if a.Addr.To4() != nil {
-				if !c.Server4.PtP {
-					return errors.New("config: per-client prefix lengths are not used in PtMP subnet mode")
-				}
-				if !c.Server4.Net.Contains(a.Addr) {
-					return fmt.Errorf("config: %v is not in %v network", a.Addr, c.Server4.Net)
-				}
-			} else {
-				if !c.Server6.PtP {
-					return errors.New("config: per-client prefix lengths are not used in PtMP subnet mode")
-				}
-				if !c.Server6.Net.Contains(a.Addr) {
-					return fmt.Errorf("config: %v is not in %v network", a.Addr, c.Server6.Net)
-				}
-			}
-		}
 	}
 
 	return nil
 }
 
-type ClientCfg struct {
+type ClientOverrides struct {
 	TunPort      int    `toml:"tun-port"`
 	TunEndpoint4 IPAddr `toml:"tun-endpoint4"`
 	TunEndpoint6 IPAddr `toml:"tun-endpoint6"`
@@ -130,47 +110,43 @@ type ClientCfg struct {
 }
 
 type Route struct {
-	Src  *IPAddr `toml:"src"`
-	Dest *IPAddr `toml:"dest"`
+	Src  *IPNet `toml:"src"`
+	Dest *IPNet `toml:"dest"`
 }
 
 type IPAddr struct {
-	Addr net.IP
-	Net  *net.IPNet
-	PtP  bool
+	net.IP
 }
 
-func (a *IPAddr) String() string {
-	prefixLen, _ := a.Net.Mask.Size()
-	return fmt.Sprintf("%v/%v", a.Addr, prefixLen)
+func (a IPAddr) String() string {
+	return a.IP.String()
 }
 
 func (a *IPAddr) UnmarshalText(text []byte) error {
 	addr := string(text)
 
-	if strings.Contains(addr, "/") {
-		var err error
-		a.Addr, a.Net, err = net.ParseCIDR(addr)
-		return err
-	}
-
-	// If no prefix length was specified - assume the peer-to-peer
-	// configuration is desired.
-	a.PtP = true
-	a.Addr = net.ParseIP(addr)
-	if a.Addr == nil {
+	a.IP = net.ParseIP(addr)
+	if a.IP == nil {
 		return errors.New("malformed IP")
 	}
 
-	// Build dummy value for IPNet that covers only specified IP.
-	prefixLen := 128
-	if a.Addr.To4() != nil {
-		prefixLen = 32
-	}
-
-	a.Net = &net.IPNet{
-		IP:   a.Addr,
-		Mask: net.CIDRMask(prefixLen, prefixLen),
-	}
 	return nil
+}
+
+type IPNet struct {
+	net.IPNet
+}
+
+func (a IPNet) String() string {
+	prefixLen, _ := a.Mask.Size()
+	return fmt.Sprintf("%v/%v", a.IP, prefixLen)
+}
+
+func (a *IPNet) UnmarshalText(text []byte) error {
+	addr := string(text)
+
+	_, network, err := net.ParseCIDR(addr)
+	a.IP = network.IP
+	a.Mask = network.Mask
+	return err
 }

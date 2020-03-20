@@ -1,7 +1,6 @@
 package wboxclient
 
 import (
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -82,6 +81,14 @@ func setTunnelCfg(m linkmgr.Manager, cfg Config, configIPv6 net.IP, clCfg *wboxp
 	}
 	// TODO: Test IPv6 connectivity and do not attempt to use it?
 	log.Printf("tunnel via %v:%v", srvEndpoint.IP, srvEndpoint.Port)
+	wgCfg.Peers[0].Endpoint = &srvEndpoint.UDPAddr
+
+	if clCfg.GetServer4() != 0 {
+		log.Println("server4:", wboxproto.IPv4(clCfg.GetServer4()))
+	}
+	if clCfg.GetServer6() != nil {
+		log.Println("server6:", clCfg.GetServer6().AsIP())
+	}
 
 	addrs := make([]linkmgr.Address, 0, len(clCfg.Net6)+len(clCfg.Net4))
 	for _, net6 := range clCfg.Net6 {
@@ -90,14 +97,21 @@ func setTunnelCfg(m linkmgr.Manager, cfg Config, configIPv6 net.IP, clCfg *wboxp
 			Mask: net.CIDRMask(int(net6.GetPrefixLen()), 128),
 		})
 
-		log.Printf("using addr %v/%v", net6.Addr.AsIP(), net6.PrefixLen)
-		addrs = append(addrs, linkmgr.Address{
+		log.Printf("using addr %v/%v", net6.Addr.AsIP(), net6.GetPrefixLen())
+		addr := linkmgr.Address{
 			IPNet: net.IPNet{
 				IP:   net6.Addr.AsIP(),
-				Mask: net.CIDRMask(128, int(net6.GetPrefixLen())),
+				Mask: net.CIDRMask(int(net6.GetPrefixLen()), 128),
 			},
 			Scope: linkmgr.ScopeGlobal,
-		})
+		}
+		if net6.GetPrefixLen() == 128 {
+			addr.Peer = &net.IPNet{
+				IP:   clCfg.GetServer6().AsIP(),
+				Mask: net.CIDRMask(128, 128),
+			}
+		}
+		addrs = append(addrs, addr)
 	}
 	for _, net4 := range clCfg.Net4 {
 		ip := wboxproto.IPv4(net4.GetAddr()).To4()
@@ -107,17 +121,21 @@ func setTunnelCfg(m linkmgr.Manager, cfg Config, configIPv6 net.IP, clCfg *wboxp
 			Mask: mask,
 		})
 
-		brd := make(net.IP, 4)
-		binary.BigEndian.PutUint32(brd, binary.BigEndian.Uint32(ip)|^binary.BigEndian.Uint32(net.IP(mask).To4()))
-
-		log.Printf("using addr %v/%v", wboxproto.IPv4(net4.Addr), net4.PrefixLen)
-		addrs = append(addrs, linkmgr.Address{
+		log.Printf("using addr %v/%v", wboxproto.IPv4(net4.Addr), net4.GetPrefixLen())
+		addr := linkmgr.Address{
 			IPNet: net.IPNet{
 				IP:   wboxproto.IPv4(net4.Addr),
 				Mask: net.CIDRMask(int(net4.GetPrefixLen()), 32),
 			},
 			Scope: linkmgr.ScopeGlobal,
-		})
+		}
+		if net4.GetPrefixLen() == 32 {
+			addr.Peer = &net.IPNet{
+				IP:   wboxproto.IPv4(clCfg.GetServer4()),
+				Mask: net.CIDRMask(32, 32),
+			}
+		}
+		addrs = append(addrs, addr)
 	}
 
 	for _, route4 := range clCfg.Routes4 {
