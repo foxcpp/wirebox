@@ -4,5 +4,3 @@ cmd/wboxd/wboxd
 cmd/wboxd/wboxd.toml
 cmd/wbox/wbox
 cmd/wbox/wbox.toml
-vendor/
-.vscode/
