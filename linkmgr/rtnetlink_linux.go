@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
-	"cuelang.org/go/pkg/strings"
 	"github.com/jsimonetti/rtnetlink"
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl"
