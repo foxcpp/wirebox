@@ -36,6 +36,7 @@ type Link interface {
 	DialUDP(local, remote net.UDPAddr) (*net.UDPConn, error)
 	ListenUDP(local net.UDPAddr) (*net.UDPConn, error)
 
+	GetRoutes() ([]Route, error)
 	AddRoute(Route) error
 	DelRoute(Route) error
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 
+	"cuelang.org/go/pkg/strings"
 	"github.com/jsimonetti/rtnetlink"
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -238,6 +239,30 @@ func asRouteMsg(ifaceIndx int, r Route) *rtnetlink.RouteMessage {
 	}
 }
 
+func (l rtnLink) GetRoutes() ([]Route, error) {
+	routes := []Route{}
+
+	// get IPv4 routes
+	routeMsgsInet, err := l.mngr.rtn.Route.List()
+	if err != nil {
+		return routes, LinkError{l.iface.Name, err}
+	}
+	for _, routeMsg := range routeMsgsInet {
+		if routeMsg.Attributes.OutIface == uint32(l.iface.Index) && routeMsg.Attributes.Table == uint32(unix.RT_TABLE_MAIN) {
+			maskLength := 32
+			// if ip contains ":", it's IPv6
+			if strings.Contains(routeMsg.Attributes.Dst.String(), ":") {
+				maskLength = 128
+			}
+			routes = append(routes, Route{
+				Dest: net.IPNet{IP: routeMsg.Attributes.Dst, Mask: net.CIDRMask(int(routeMsg.DstLength), maskLength)},
+				Src:  routeMsg.Attributes.Src})
+		}
+	}
+
+	return routes, nil
+}
+
 func (l rtnLink) AddRoute(r Route) error {
 	err := l.mngr.rtn.Route.Add(asRouteMsg(l.iface.Index, r))
 	if err != nil {
@@ -355,6 +380,7 @@ func NewManager() (Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("link mngr: %w", err)
 	}
+
 	rtn, err := rtnetlink.Dial(nil)
 	if err != nil {
 		return nil, fmt.Errorf("link mngr: %w", err)

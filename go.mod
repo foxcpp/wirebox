@@ -1,13 +1,14 @@
 module github.com/foxcpp/wirebox
 
-go 1.13
+go 1.14
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/go-yaml/yaml v2.1.0+incompatible
-	github.com/golang/protobuf v1.3.5
-	github.com/jsimonetti/rtnetlink v0.0.0-20200117123717-f846d4f6c1f4
-	github.com/vishvananda/netlink v1.1.1-0.20200221165523-c79a4b7b4066
-	golang.org/x/sys v0.0.0-20200302150141-5c8b2ff67527
-	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20200205215550-e35592f146e4
+	github.com/golang/protobuf v1.4.1
+	github.com/jsimonetti/rtnetlink v0.0.0-20200505065535-3ee32e7e21a4
+	golang.org/x/crypto v0.0.0-20200510223506-06a226fb4e37 // indirect
+	golang.org/x/net v0.0.0-20200513185701-a91f0712d120 // indirect
+	golang.org/x/sys v0.0.0-20200513112337-417ce2331b5c
+	golang.zx2c4.com/wireguard v0.0.20200320
+	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20200514021741-d71503c3ca55
 )
