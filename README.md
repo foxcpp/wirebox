@@ -1,6 +1,8 @@
-Wirebox **WIP**
+Wirebox
 =========
 > Dynamic WireGuard tunnel configuration daemon.
+
+**Unmaintained: The project is not in active development. Existing code works (hopefully), but no further improvements or bugfixes will be made.**
 
 _Both client & server are Linux-only now._
 
